@@ -134,7 +134,11 @@ if st.session_state.puntos:
         pdf.set_font("Arial", '', 8)
         pdf.multi_cell(0, 4, "Metodologia: Res. 0627 de 2006 MAVDT. Equipo: Sonometro Cirrus HD2010 Clase 1. Correccion LRAeq = 10*log(10^(LT/10)-10^(LR/10)). Si LR >= LT o Diff >10dB no se corrige.")
 
-        out = pdf.output(dest='S').encode('latin1')
+       pdf_out = pdf.output(dest='S')
+if isinstance(pdf_out, str):
+    out = pdf_out.encode('latin1')
+else:
+    out = bytes(pdf_out)
         st.download_button("⬇️ Descargar PDF", data=out, file_name=f"Informe_Ruido_{empresa}.pdf", mime="application/pdf")
 
     if st.button("🗑️ Borrar todo"):
