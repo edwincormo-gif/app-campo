@@ -1,149 +1,193 @@
 import streamlit as st
 import pandas as pd
-import math
+import math, datetime, io, zipfile
 from fpdf import FPDF
-import datetime
+from PIL import Image
 
-st.set_page_config(page_title="Ruido Ambiental 0627", page_icon="🔊", layout="wide")
-st.title("🔊 Informe Ruido Ambiental - Res. 0627 de 2006")
-st.caption("HD2010 Cirrus - LRAeq Corregido - Múltiples puntos")
+st.set_page_config(page_title="Ruido Pro - Carpeta Completa", page_icon="📁", layout="wide")
+st.title("📁 Sistema Completo Ruido Ambiental Res. 0627")
+st.caption("Fotos + Meteo + Coordenadas + Carpeta Final - FIXED")
 
-# --- CONFIG ---
-sector = st.selectbox("Sector Normativo", ["Sector A - Residencial", "Sector B - Comercial", "Sector C - Industrial", "Sector D - Tranquilidad"])
-horario = st.selectbox("Horario", ["Diurno (7:01-21:00)", "Nocturno (21:01-7:00)"])
-fuente = st.text_input("Fuente evaluada", "Planta trituradora de piedra")
-empresa = st.text_input("Empresa / Proyecto", "Proyecto Trituradora")
-responsable = st.text_input("Responsable", "Edwin - Medición en campo")
-
-limites = {"Sector A - Residencial": (55, 50), "Sector B - Comercial": (65, 60), "Sector C - Industrial": (75, 75), "Sector D - Tranquilidad": (45, 45)}
-lim_d, lim_n = limites[sector]
-limite_actual = lim_d if "Diurno" in horario else lim_n
+# --- PROYECTO ---
+with st.sidebar:
+    st.header("📋 Datos Proyecto")
+    empresa = st.text_input("Empresa", "Cantera La Esmeralda")
+    proyecto = st.text_input("Proyecto", "Trituradora Primaria")
+    responsable = st.text_input("Responsable", "Edwin")
+    fecha_med = st.date_input("Fecha medición", datetime.date.today())
+    sector = st.selectbox("Sector", ["Sector C - Industrial","Sector A - Residencial","Sector B - Comercial","Sector D - Tranquilidad"])
+    horario = st.selectbox("Horario", ["Diurno","Nocturno"])
+    limite = 75 if "Industrial" in sector else 65
+    st.metric("Límite", f"{limite} dB")
 
 def leer_laeq(file):
     if not file: return None
     file.seek(0)
     try:
-        df = pd.read_csv(file, sep=';', decimal=',', encoding='latin1', skiprows=1, on_bad_lines='skip')
-        if 'LAeq' not in str(df.columns):
-            file.seek(0)
-            df = pd.read_csv(file, sep=';', decimal=',', encoding='latin1', skiprows=1, on_bad_lines='skip', engine='python')
-    except:
-        file.seek(0)
         df = pd.read_csv(file, sep=';', decimal=',', encoding='latin1', skiprows=1, on_bad_lines='skip', engine='python')
-
-    col = None
-    for c in df.columns:
-        if str(c).strip().upper() == 'LAEQ':
-            col = c
-            break
-    if not col: col = df.columns[0]
-
+    except Exception as e:
+        st.error(f"Error leyendo CSV: {e}")
+        return None
+    col = next((c for c in df.columns if 'LAEQ' in str(c).upper()), None)
+    if not col:
+        col = df.columns[1] if len(df.columns)>1 else df.columns[0]
     vals = pd.to_numeric(df[col].astype(str).str.replace(',','.'), errors='coerce').dropna()
     vals = vals[(vals>20)&(vals<140)]
     if len(vals)==0: return None
     laeq = 10*math.log10(sum(10**(v/10) for v in vals)/len(vals))
-    return round(laeq,1), len(vals)
-
-st.divider()
-st.subheader("Carga de Puntos (hasta 10)")
+    return round(laeq,1), len(vals), df
 
 if 'puntos' not in st.session_state:
     st.session_state.puntos = []
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    nombre_punto = st.text_input("Nombre Punto", f"Punto {len(st.session_state.puntos)+1}")
-with col2:
-    lat = st.number_input("Latitud", value=4.60971, format="%.6f")
-with col3:
-    lon = st.number_input("Longitud", value=-74.08175, format="%.6f")
+st.subheader("➕ Agregar Nuevo Punto de Medición")
 
-c1, c2 = st.columns(2)
-with c1:
-    f_total = st.file_uploader(f"CSV TOTAL - {nombre_punto}", type=["csv"], key=f"t_{len(st.session_state.puntos)}")
-with c2:
-    f_res = st.file_uploader(f"CSV RESIDUAL - {nombre_punto}", type=["csv"], key=f"r_{len(st.session_state.puntos)}")
+with st.form("form_punto", clear_on_submit=True):
+    c1,c2,c3 = st.columns(3)
+    nombre = c1.text_input("Nombre Punto", f"Punto {len(st.session_state.puntos)+1}")
+    lat = c2.number_input("Latitud", value=4.609710, format="%.6f")
+    lon = c3.number_input("Longitud", value=-74.081750, format="%.6f")
 
-if st.button("➕ Agregar Punto") and f_total and f_res:
-    lt_data = leer_laeq(f_total)
-    lr_data = leer_laeq(f_res)
-    if lt_data and lr_data:
-        lt, nt = lt_data
-        lr, nr = lr_data
-        diff = lt - lr
-        if lr >= lt:
-            lra = lt
-            corr = "Fondo >= Total - No corregible"
-        elif diff >= 10:
-            lra = lt
-            corr = f"Diff {diff:.1f} >10dB - No se corrige"
+    st.write("**📸 Fotos del punto (hasta 3)**")
+    cf1, cf2, cf3 = st.columns(3)
+    foto1 = cf1.file_uploader("Foto 1 - Vista general", type=["jpg","jpeg","png"], key=f"f1_{len(st.session_state.puntos)}")
+    foto2 = cf2.file_uploader("Foto 2 - Sonómetro", type=["jpg","jpeg","png"], key=f"f2_{len(st.session_state.puntos)}")
+    foto3 = cf3.file_uploader("Foto 3 - Fuente", type=["jpg","jpeg","png"], key=f"f3_{len(st.session_state.puntos)}")
+
+    st.write("**🌦️ Datos Meteorológicos**")
+    cm1,cm2,cm3,cm4 = st.columns(4)
+    temp = cm1.number_input("Temp °C", value=18.5)
+    hum = cm2.number_input("Humedad %", value=65.0)
+    viento_vel = cm3.number_input("Viento m/s", value=1.2)
+    viento_dir = cm4.selectbox("Dir Viento", ["N","NE","E","SE","S","SW","W","NW"])
+    presion = st.number_input("Presión hPa", value=1012.0)
+    cielo = st.selectbox("Cielo", ["Despejado","Parcial nublado","Nublado","Lluvia ligera"])
+
+    st.write("**🔊 Datos Acústicos**")
+    ca1,ca2 = st.columns(2)
+    file_total = ca1.file_uploader("CSV TOTAL (a.csv prendida)", type=["csv"])
+    file_res = ca2.file_uploader("CSV RESIDUAL (a.csv apagada)", type=["csv"])
+    obs = st.text_area("Observaciones", "Fuente: trituradora en operación normal. Suelo: afirmado.")
+
+    submitted = st.form_submit_button("💾 Guardar Punto")
+
+    if submitted:
+        if not file_total or not file_res:
+            st.warning("Debes subir los 2 CSV tipo a.csv")
         else:
-            lra = round(10*math.log10(10**(lt/10)-10**(lr/10)),1)
-            corr = f"Corregido -{lt-lra:.1f} dB"
+            lt_data = leer_laeq(file_total)
+            lr_data = leer_laeq(file_res)
+            if lt_data and lr_data:
+                lt, nt, _ = lt_data
+                lr, nr, _ = lr_data
+                diff = lt - lr
+                if lr >= lt:
+                    lra = lt
+                    corr = "No corregible"
+                elif diff >= 10:
+                    lra = lt
+                    corr = f"Diff {diff:.1f}>10 - No corrige"
+                else:
+                    lra = round(10*math.log10(10**(lt/10)-10**(lr/10)),1)
+                    corr = f"Corregido"
+                cumple = "CUMPLE" if lra <= limite else "NO CUMPLE"
 
-        cumple = "CUMPLE" if lra <= limite_actual else "NO CUMPLE"
-        st.session_state.puntos.append({
-            "Punto": nombre_punto, "Lat": lat, "Lon": lon,
-            "TOTAL": lt, "RESIDUAL": lr, "LRAeq": lra,
-            "Correccion": corr, "Limite": limite_actual, "Cumple": cumple
-        })
-        st.success(f"Agregado {nombre_punto}: {lra} dB - {cumple}")
-    else:
-        st.error("No pude leer los CSV - verifica que sean tipo a.csv")
+                punto = {
+                    "nombre": nombre, "lat": lat, "lon": lon,
+                    "fotos": [f for f in [foto1,foto2,foto3] if f],
+                    "temp": temp, "hum": hum, "viento_vel": viento_vel, "viento_dir": viento_dir,
+                    "presion": presion, "cielo": cielo,
+                    "total": lt, "residual": lr, "lra": lra, "diff": diff, "corr": corr, "cumple": cumple,
+                    "obs": obs, "file_total": file_total, "file_res": file_res,
+                    "fecha": str(fecha_med)
+                }
+                st.session_state.puntos.append(punto)
+                st.success(f"{nombre} guardado: {lra} dB - {cumple}")
+                st.rerun()
+            else:
+                st.error("Error leyendo CSV - usa solo tipo a.csv (Section1 Date;LAeq)")
 
-# --- TABLA Y MAPA ---
+# --- MOSTRAR PUNTOS ---
 if st.session_state.puntos:
     st.divider()
-    df_puntos = pd.DataFrame(st.session_state.puntos)
-    st.dataframe(df_puntos, use_container_width=True)
+    df_show = pd.DataFrame([{"Punto":p["nombre"],"TOTAL":p["total"],"RESIDUAL":p["residual"],"LRAeq":p["lra"],"Cumple":p["cumple"],"Lat":p["lat"],"Lon":p["lon"],"Temp":p["temp"],"Viento":f"{p['viento_vel']} {p['viento_dir']}"} for p in st.session_state.puntos])
+    st.dataframe(df_show, use_container_width=True)
+    st.map(df_show.rename(columns={"Lat":"lat","Lon":"lon"}))
 
-    st.map(df_puntos.rename(columns={"Lat":"lat","Lon":"lon"}))
+    # --- GENERAR CARPETA ZIP ---
+    st.divider()
+    st.subheader("📦 Generar Carpeta Final del Proyecto")
 
-    # --- PDF ---
-    if st.button("📄 Generar Informe PDF"):
-        pdf = FPDF()
-        pdf.add_page()
-        try:
-            pdf.image("logo.png", 10, 8, 33)
-        except:
-            pass
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, f"Informe Ruido Ambiental - {empresa}", ln=True, align='C')
-        pdf.set_font("Arial", '', 10)
-        pdf.cell(0, 6, f"Fuente: {fuente} | Sector: {sector} | {horario} | Limite: {limite_actual} dB | Fecha: {datetime.date.today()}", ln=True, align='C')
-        pdf.cell(0, 6, f"Responsable: {responsable}", ln=True, align='C')
-        pdf.ln(10)
+    if st.button("🚀 GENERAR CARPETA.ZIP COMPLETA"):
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
 
-        pdf.set_font("Arial", 'B', 9)
-        cols = ["Punto", "TOTAL", "RESIDUAL", "LRAeq", "Limite", "Cumple"]
-        widths = [40, 20, 20, 20, 20, 30]
-        for i, c in enumerate(cols):
-            pdf.cell(widths[i], 7, c, border=1)
-        pdf.ln()
-        pdf.set_font("Arial", '', 9)
-        for _, row in df_puntos.iterrows():
-            pdf.cell(widths[0], 6, str(row["Punto"]), border=1)
-            pdf.cell(widths[1], 6, str(row["TOTAL"]), border=1)
-            pdf.cell(widths[2], 6, str(row["RESIDUAL"]), border=1)
-            pdf.cell(widths[3], 6, str(row["LRAeq"]), border=1)
-            pdf.cell(widths[4], 6, str(row["Limite"]), border=1)
-            pdf.cell(widths[5], 6, str(row["Cumple"]), border=1)
-            pdf.ln()
+            # 1. Excel Resumen
+            output_excel = io.BytesIO()
+            df_show.to_excel(output_excel, index=False)
+            zf.writestr(f"{proyecto}/05_Resumen_Excel/Resumen_Puntos.xlsx", output_excel.getvalue())
 
-        pdf.ln(5)
-        pdf.set_font("Arial", '', 8)
-        pdf.multi_cell(0, 4, "Metodologia: Res. 0627 de 2006 MAVDT. Equipo: Sonometro Cirrus HD2010 Clase 1. Correccion LRAeq = 10*log(10^(LT/10)-10^(LR/10)). Si LR >= LT o Diff >10dB no se corrige.")
+            # 2. Fotos
+            for p in st.session_state.puntos:
+                for i, foto in enumerate(p["fotos"]):
+                    try:
+                        foto.seek(0)
+                        zf.writestr(f"{proyecto}/04_Fotos_Puntos/{p['nombre']}_Foto{i+1}.jpg", foto.read())
+                    except:
+                        pass
 
-       pdf_out = pdf.output(dest='S')
-if isinstance(pdf_out, str):
-    out = pdf_out.encode('latin1')
-else:
-    out = bytes(pdf_out)
-        st.download_button("⬇️ Descargar PDF", data=out, file_name=f"Informe_Ruido_{empresa}.pdf", mime="application/pdf")
+            # 3. CSVs crudos
+            for p in st.session_state.puntos:
+                try:
+                    p["file_total"].seek(0)
+                    zf.writestr(f"{proyecto}/03_Datos_Crudos_CSV/{p['nombre']}_TOTAL.csv", p["file_total"].read())
+                    p["file_res"].seek(0)
+                    zf.writestr(f"{proyecto}/03_Datos_Crudos_CSV/{p['nombre']}_RESIDUAL.csv", p["file_res"].read())
+                except:
+                    pass
 
-    if st.button("🗑️ Borrar todo"):
+            # 4. PDF Final - CORREGIDO
+            pdf = FPDF()
+            pdf.add_page()
+            try:
+                if os.path.exists("logo.png"):
+                    pdf.image("logo.png", 10, 8, 35)
+            except:
+                pass
+            pdf.set_font("Arial",'B',14)
+            pdf.cell(0,10,f"Informe Ruido Ambiental - {proyecto}",ln=True,align='C')
+            pdf.set_font("Arial",'',9)
+            pdf.cell(0,5,f"Empresa: {empresa} | Fecha: {fecha_med} | Sector: {sector} | {horario} | Limite {limite} dB | Resp: {responsable}",ln=True,align='C')
+            pdf.ln(8)
+
+            for p in st.session_state.puntos:
+                pdf.set_font("Arial",'B',11)
+                pdf.set_fill_color(240,240,240)
+                pdf.cell(0,7,f" {p['nombre']} - {p['lra']} dB - {p['cumple']}",ln=True,fill=True)
+                pdf.set_font("Arial",'',8)
+                # Evitar caracteres especiales que rompen latin1
+                obs_clean = p['obs'].encode('latin1','ignore').decode('latin1')
+                pdf.cell(0,4,f"Coord: {p['lat']}, {p['lon']} | TOTAL {p['total']} dB | RESIDUAL {p['residual']} dB | {p['corr']} | Meteo: {p['temp']}C, {p['hum']}%, Viento {p['viento_vel']}m/s {p['viento_dir']}, {p['cielo']}, {p['presion']}hPa",ln=True)
+                pdf.cell(0,4,f"Obs: {obs_clean}",ln=True)
+                pdf.ln(2)
+
+            # FIX DEFINITIVO PDF
+            pdf_out = pdf.output(dest='S')
+            if isinstance(pdf_out, str):
+                pdf_bytes = pdf_out.encode('latin1', 'ignore')
+            else:
+                pdf_bytes = bytes(pdf_out)
+
+            zf.writestr(f"{proyecto}/01_Informe_PDF/Informe_Final_{proyecto}.pdf", pdf_bytes)
+            zf.writestr(f"{proyecto}/Informe_Final.pdf", pdf_bytes)
+
+        zip_buffer.seek(0)
+        st.download_button("⬇️ DESCARGAR CARPETA COMPLETA.ZIP", data=zip_buffer, file_name=f"{proyecto}_{fecha_med}.zip", mime="application/zip")
+        st.balloons()
+        st.success("¡Carpeta generada! Ya tienes todo organizado para entregar.")
+
+    if st.button("🗑️ Borrar todos los puntos"):
         st.session_state.puntos = []
         st.rerun()
-
 else:
-    st.info("Tu captura que me mandaste ya es el Punto 1: TOTAL 63.3 dB / RESIDUAL 51.5 dB / LRAeq 63.3 dB - CUMPLE. Agrégalo arriba como 'Punto uno' con tus 2 archivos a.csv y f.csv")
+    st.info("Agrega tu primer punto arriba. Usa los CSV tipo a.csv que ya te funcionaron (63.3 dB y 51.5 dB)")
