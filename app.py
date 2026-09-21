@@ -78,7 +78,13 @@ if file_total and file_res and 'lt' in locals() and 'lr' in locals() and lt and 
         lra = lt
         st.metric("LRAeq FINAL", f"{lra} dB", "Diferencia >10dB, no se corrige")
     else:
-        lra = 10*math.log10(10**(lt/10) - 10**(lr/10))
+               if lr >= lt:
+            st.warning(f"⚠️ RESIDUAL ({lr} dB) >= TOTAL ({lt} dB). No se puede corregir. El ruido de fondo es más alto que la fuente.")
+            lra = None
+        else:
+            lra = 10*math.log10(10**(lt/10) - 10**(lr/10))
+            lra = round(lra,1)
+            st.metric("LRAeq CORREGIDO", f"{lra} dB", f"Corregido -{round(lt-lra,1)} dB")
         lra = round(lra,1)
         st.metric("LRAeq CORREGIDO", f"{lra} dB", f"Corregido -{round(lt-lra,1)} dB")
 
