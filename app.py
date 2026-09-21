@@ -1,121 +1,113 @@
 import streamlit as st
 import pandas as pd
-import math, datetime, io, zipfile, os
-import matplotlib.pyplot as plt
-from fpdf import FPDF
+import numpy as np
+import os
+from PIL import Image
 
-st.set_page_config(page_title="Ruido Final", layout="wide")
-st.title("📁 App Ruido - Fotos + Meteo + Informe Final")
+st.set_page_config(page_title="EQUISIMA OFFLINE", page_icon="🟡", layout="wide")
 
-with st.sidebar:
-    empresa = st.text_input("Empresa", "Cantera La Esmeralda")
-    proyecto = st.text_input("Proyecto", "Trituradora")
-    responsable = st.text_input("Responsable", "Edwin")
-    fecha = st.date_input("Fecha", datetime.date.today())
-    limite = 75
+# --- PWA PARA QUE FUNCIONE SIN DATOS ---
+st.markdown("""
+<script>
+if ('serviceWorker' in navigator) {
+  let sw = `self.addEventListener('install', e=>{e.waitUntil(caches.open('equisima-v2').then(c=>c.addAll(['./'])))}); self.addEventListener('fetch', e=>{e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).catch(()=>caches.match('./'))))});`;
+  let blob = new Blob([sw], {type: 'text/javascript'});
+  navigator.serviceWorker.register(URL.createObjectURL(blob)).then(()=>console.log('OFFLINE OK'));
+}
+</script>
+""", unsafe_allow_html=True)
 
-def leer_laeq(file):
-    file.seek(0)
-    df = pd.read_csv(file, sep=';', decimal=',', encoding='latin1', skiprows=1, on_bad_lines='skip', engine='python')
-    col = next((c for c in df.columns if 'LAEQ' in str(c).upper()), df.columns[1])
-    vals = pd.to_numeric(df[col].astype(str).str.replace(',','.'), errors='coerce').dropna()
-    vals = vals[(vals>20)&(vals<140)]
-    laeq = 10*math.log10(sum(10**(v/10) for v in vals)/len(vals))
-    return round(laeq,1)
+# Logo
+if os.path.exists("logo.png"):
+    st.image("logo.png", width=120)
 
-if 'puntos' not in st.session_state:
-    st.session_state.puntos = []
+st.title("🟡 EQUISIMA SAS - APP CAMPO OFFLINE")
+st.caption("3224523451 | edwincormo@gmail.com | Funciona sin internet despues de instalar")
 
-st.subheader("➕ Agregar punto")
-with st.form("form", clear_on_submit=True):
-    c1,c2,c3 = st.columns(3)
-    nombre = c1.text_input("Nombre", f"Punto {len(st.session_state.puntos)+1}")
-    lat = c2.number_input("Lat", 4.60971, format="%.6f")
-    lon = c3.number_input("Lon", -74.08175, format="%.6f")
+def calcular_laeq(file):
+    try:
+        df = pd.read_csv(file, sep=';', encoding='latin-1', engine='python')
+        # Buscar columna con dB
+        col = None
+        for c in df.columns:
+            if 'LAeq' in str(c) or 'Leq' in str(c) or 'dB' in str(c) or 'LAF' in str(c):
+                col = c
+                break
+        if col is None:
+            col = df.columns[1] if len(df.columns)>1 else df.columns[0]
+        vals = pd.to_numeric(df[col].astype(str).str.replace(',','.'), errors='coerce').dropna()
+        vals = vals[(vals>20)&(vals<140)]
+        if len(vals)==0:
+            return None, "No hay valores"
+        laeq = 10*np.log10((10**(vals/10)).mean())
+        return round(laeq,1), len(vals)
+    except Exception as e:
+        return None, str(e)
 
-    foto = st.file_uploader("📸 Foto punto", type=["jpg","png","jpeg"])
+# FORMULARIO
+with st.form("punto"):
+    st.subheader("1️⃣ Datos del Punto")
+    c1,c2 = st.columns(2)
+    nombre = c1.text_input("Nombre Punto", "R-1 K0+500")
+    limite = c2.selectbox("Limite dB", [75, 55, 65], index=0)
+    macro = st.text_input("Macrolocalizacion", "Par Vial Puente Tierra")
+    micro = st.text_input("Microlocalizacion", "Costado via")
+    c3,c4 = st.columns(2)
+    lat = c3.text_input("Latitud", "7.123456")
+    lon = c4.text_input("Longitud", "-73.123456")
+    c5,c6,c7 = st.columns(3)
+    temp = c5.text_input("Temp C", "22")
+    viento = c6.text_input("Viento m/s", "1.2")
+    hum = c7.text_input("Hum %", "65")
+    cielo = st.selectbox("Cielo", ["Despejado","Parcial","Nublado"])
+    fuente = st.text_input("Fuente sonora", "Trituradora")
 
-    m1,m2,m3,m4 = st.columns(4)
-    temp = m1.number_input("Temp °C", 18.5)
-    hum = m2.number_input("Hum %", 65.0)
-    viento = m3.number_input("Viento m/s", 1.2)
-    cielo = m4.selectbox("Cielo", ["Despejado","Parcial","Nublado"])
+    st.subheader("2️⃣ Archivos a.csv del sonometro")
+    f_total = st.file_uploader("CSV TOTAL a.csv", type=['csv'], key='t')
+    f_res = st.file_uploader("CSV RESIDUAL a.csv", type=['csv'], key='r')
+    foto = st.camera_input("📸 Foto del punto")
 
-    f1,f2 = st.columns(2)
-    ft = f1.file_uploader("CSV TOTAL", type="csv")
-    fr = f2.file_uploader("CSV RESIDUAL", type="csv")
-    obs = st.text_input("Obs", "Trituradora en operación")
+    guardar = st.form_submit_button("💾 CALCULAR LRAeq Y GUARDAR OFFLINE", use_container_width=True)
 
-    if st.form_submit_button("Guardar"):
-        if ft and fr:
-            lt = leer_laeq(ft)
-            lr = leer_laeq(fr)
-            diff = lt-lr
-            lra = lt if diff>=10 else round(10*math.log10(10**(lt/10)-10**(lr/10)),1)
-            cumple = "CUMPLE" if lra<=limite else "NO CUMPLE"
-            st.session_state.puntos.append({"nombre":nombre,"lat":lat,"lon":lon,"foto":foto,"temp":temp,"hum":hum,"viento":viento,"cielo":cielo,"lt":lt,"lr":lr,"lra":lra,"cumple":cumple,"obs":obs,"ft":ft,"fr":fr})
-            st.success(f"{nombre} {lra} dB {cumple}")
-            st.rerun()
+if guardar:
+    if not f_total or not f_res:
+        st.error("Carga los 2 CSV a.csv")
+    else:
+        lt, n1 = calcular_laeq(f_total)
+        lr, n2 = calcular_laeq(f_res)
+        if lt and lr:
+            diff = lt - lr
+            if diff >= 10:
+                lra = lt
+            else:
+                lra = 10*np.log10(10**(lt/10)-10**(lr/10))
+                lra = round(lra,1)
+            cumple = "CUMPLE" if lra <= limite else "NO CUMPLE"
+            color = "green" if cumple=="CUMPLE" else "red"
+            st.markdown(f"<h2 style='color:{color}'>LTotal: {lt} dB | LResidual: {lr} dB | LRAeq: {lra} dB | {cumple}</h2>", unsafe_allow_html=True)
 
-if st.session_state.puntos:
-    df = pd.DataFrame([{"Punto":p["nombre"],"LRAeq":p["lra"],"Limite":limite,"Cumple":p["cumple"]} for p in st.session_state.puntos])
+            if 'puntos' not in st.session_state:
+                st.session_state.puntos = []
+            st.session_state.puntos.append({
+                "Punto": nombre, "LT": lt, "LR": lr, "LRAeq": lra,
+                "Estado": cumple, "Lat": lat, "Lon": lon,
+                "Macro": macro, "Micro": micro, "Temp": temp
+            })
+            st.success(f"Guardado OFFLINE: {nombre} - {lra} dB")
+        else:
+            st.error(f"Error: {n1} {n2}")
+
+# TABLA
+if 'puntos' in st.session_state and st.session_state.puntos:
+    st.subheader("📋 Puntos guardados en este celular (offline)")
+    df = pd.DataFrame(st.session_state.puntos)
     st.dataframe(df, use_container_width=True)
 
-    # GRAFICA
-    fig, ax = plt.subplots()
-    ax.bar(df["Punto"], df["LRAeq"])
-    ax.axhline(limite, color='r', linestyle='--', label='Limite 75 dB')
-    ax.legend()
-    st.pyplot(fig)
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("📄 Descargar Excel Informe", csv, "Informe_EQUISIMA_OFFLINE.csv", "text/csv", use_container_width=True)
 
-    if st.button("📄 GENERAR INFORME FINAL + CARPETA"):
-        # Guardar grafica
-        fig.savefig("/tmp/graf.png", dpi=150)
+    if st.button("🗑️ Borrar todo"):
+        st.session_state.puntos = []
+        st.rerun()
 
-        # PDF
-        pdf = FPDF()
-        pdf.add_page()
-        # Logo
-        if os.path.exists("logo.png"):
-            try: pdf.image("logo.png",10,8,30)
-            except: pass
-        pdf.set_font("Arial",'B',14)
-        pdf.cell(0,10,f"Informe Ruido {proyecto}", align='C', ln=True)
-        pdf.set_font("Arial",'',9)
-        pdf.cell(0,5,f"{empresa} | {fecha} | Sector C Industrial 75 dB | {responsable}", align='C', ln=True)
-        pdf.ln(10)
-
-        pdf.image("/tmp/graf.png", w=190)
-        pdf.ln(5)
-
-        pdf.set_font("Arial",'B',10)
-        pdf.cell(0,7,"Resultados", ln=True)
-        pdf.set_font("Arial",'',8)
-        for p in st.session_state.puntos:
-            pdf.cell(0,5,f"{p['nombre']}: LT {p['lt']} dB | LR {p['lr']} dB | LRAeq {p['lra']} dB | {p['cumple']} | {p['lat']},{p['lon']} | Meteo {p['temp']}C {p['hum']}% Viento {p['viento']}m/s {p['cielo']}", ln=True)
-            if p["foto"]:
-                try:
-                    p["foto"].seek(0)
-                    open(f"/tmp/foto_{p['nombre']}.jpg","wb").write(p["foto"].read())
-                    pdf.image(f"/tmp/foto_{p['nombre']}.jpg", w=80)
-                except: pass
-            pdf.ln(3)
-
-        # CORRECCION DEL ERROR
-        out = pdf.output(dest='S')
-        pdf_bytes = out.encode('latin1') if isinstance(out,str) else bytes(out)
-
-        # ZIP
-        zb = io.BytesIO()
-        with zipfile.ZipFile(zb,"w") as z:
-            z.writestr(f"{proyecto}/Informe_Final.pdf", pdf_bytes)
-            z.write("/tmp/graf.png", f"{proyecto}/Grafica.png")
-            for p in st.session_state.puntos:
-                p["ft"].seek(0); z.writestr(f"{proyecto}/CSV/{p['nombre']}_TOTAL.csv", p["ft"].read())
-                p["fr"].seek(0); z.writestr(f"{proyecto}/CSV/{p['nombre']}_RESIDUAL.csv", p["fr"].read())
-                if p["foto"]:
-                    p["foto"].seek(0); z.writestr(f"{proyecto}/Fotos/{p['nombre']}.jpg", p["foto"].read())
-
-        zb.seek(0)
-        st.download_button("⬇️ DESCARGAR CARPETA", zb, f"{proyecto}.zip", "application/zip")
-        st.download_button("⬇️ DESCARGAR SOLO PDF", pdf_bytes, f"Informe_{proyecto}.pdf", "application/pdf")
+st.info("💡 **Para que funcione SIN DATOS en obra:** 1) Abre esta app UNA VEZ con datos 2) En Chrome, 3 puntitos > Agregar a pantalla principal > Instalar 3) Abre desde el icono amarillo, ya funciona sin internet")
